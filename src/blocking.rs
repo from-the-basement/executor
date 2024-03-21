@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Condvar, Mutex, MutexGuard,
+        Condvar, Mutex, MutexGuard, OnceLock,
     },
     thread,
     time::Duration,
@@ -10,9 +10,8 @@ use std::{
 
 use async_task::{Runnable, Task};
 use futures_lite::prelude::*;
-use once_cell::sync::OnceCell;
 
-pub(crate) static BLOCKING_EXECUTOR: OnceCell<Executor> = OnceCell::new();
+pub(crate) static BLOCKING_EXECUTOR: OnceLock<Executor> = OnceLock::new();
 
 pub fn unblock<T, F>(f: F) -> Task<T>
 where

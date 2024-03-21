@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     collections::VecDeque,
     future::Future,
     panic::{RefUnwindSafe, UnwindSafe},
@@ -9,7 +9,6 @@ use std::{
 use async_task::Runnable;
 use crossbeam_queue::SegQueue;
 use futures_lite::future;
-use once_cell::unsync::OnceCell;
 
 use super::io::Poller;
 use crate::deque::Taker;

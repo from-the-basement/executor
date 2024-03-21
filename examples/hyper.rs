@@ -32,7 +32,7 @@ fn main() {
             }
 
             let mut listener = Async::<TcpListener>::connect(address)
-                .expect(format!("server bind {} failed.", address).as_ref());
+                .unwrap_or_else(|_| panic!("server bind {} failed.", address));
             while let Some(stream) = listener.next().await {
                 match stream {
                     Ok(stream) => {

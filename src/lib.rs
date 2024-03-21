@@ -2,6 +2,7 @@ mod blocking;
 mod deque;
 mod executor;
 pub mod io;
+pub mod locals;
 pub mod net;
 pub mod utils;
 mod worker;
@@ -12,11 +13,10 @@ pub mod futures {
     }
 }
 
-use std::{future::Future, sync::Arc};
+use std::{cell::OnceCell, future::Future, sync::Arc};
 
 pub use async_task::Task;
 pub use blocking::unblock;
-use once_cell::sync::OnceCell;
 use worker::CONTEXT;
 
 pub use crate::executor::{Executor, ExecutorBuilder};
@@ -25,7 +25,6 @@ thread_local! {
     static EXECUTOR: OnceCell<Arc<Executor>> = OnceCell::new();
 }
 
-#[inline]
 pub fn spawn_local<F>(future: F) -> Task<F::Output>
 where
     F: 'static + Future,
@@ -34,7 +33,6 @@ where
     EXECUTOR.with(|executor| executor.get().unwrap().spawn_local(future))
 }
 
-#[inline]
 pub fn spawn_to<F, Fut>(to: usize, f: F) -> Task<Fut::Output>
 where
     F: 'static + Send + FnOnce() -> Fut,
@@ -44,7 +42,6 @@ where
     EXECUTOR.with(|executor| executor.get().unwrap().spawn_to(to, f))
 }
 
-#[inline]
 pub fn spawn<F>(future: F) -> Task<F::Output>
 where
     F: 'static + Future + Send,
@@ -53,12 +50,10 @@ where
     EXECUTOR.with(|executor| executor.get().unwrap().spawn(future))
 }
 
-#[inline]
 pub fn worker_num() -> usize {
     EXECUTOR.with(|executor| executor.get().unwrap().worker_num())
 }
 
-#[inline]
 pub fn current_id() -> usize {
     CONTEXT.with(|context| context.get().unwrap().id)
 }
