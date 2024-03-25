@@ -4,7 +4,7 @@ mod executor;
 pub mod io;
 pub mod locals;
 pub mod net;
-pub mod utils;
+pub mod shard;
 mod worker;
 pub mod futures {
     pub use futures_lite::*;
