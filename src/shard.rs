@@ -1,12 +1,15 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{fmt, future::Future, rc::Rc, sync::Arc};
 
-use std::future::Future;
+use unsend::lock::RwLock;
 
-#[derive(Debug)]
 pub struct Shard<T> {
-    inner: Arc<[Rc<RefCell<T>>]>,
+    inner: Arc<[Rc<RwLock<T>>]>,
+}
+
+impl<T> fmt::Debug for Shard<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Shard").finish()
+    }
 }
 
 impl<T> Clone for Shard<T> {
@@ -25,7 +28,7 @@ impl<T> Shard<T> {
         Self {
             inner: Arc::from(
                 (0..crate::worker_num())
-                    .map(|_| Rc::new(RefCell::from((f)())))
+                    .map(|_| Rc::new(RwLock::new((f)())))
                     .collect::<Vec<_>>(),
             ),
         }
@@ -34,7 +37,7 @@ impl<T> Shard<T> {
     pub async fn with<F, G>(
         &self,
         to: usize,
-        f: impl FnOnce(Rc<RefCell<T>>) -> F + Send + 'static,
+        f: impl FnOnce(Rc<RwLock<T>>) -> F + Send + 'static,
     ) -> G
     where
         F: Future<Output = G>,
@@ -68,13 +71,13 @@ mod tests {
                 let local = super::Shard::new(|| 42);
                 let a = local
                     .with(0, |a| async move {
-                        let mut a = a.borrow_mut();
+                        let mut a = a.write().await;
                         *a += 1;
                         *a
                     })
                     .await;
-                let b = local.with(1, |b| async move { *b.borrow() }).await;
-                let a_ = local.with(0, |a| async move { *a.borrow() }).await;
+                let b = local.with(1, |b| async move { *b.read().await }).await;
+                let a_ = local.with(0, |a| async move { *a.read().await }).await;
                 assert_eq!(a, 43);
                 assert_eq!(b, 42);
                 assert_eq!(a_, 43);

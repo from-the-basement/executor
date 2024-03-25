@@ -18,6 +18,7 @@ slab = "0.4"
 socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1", default-features = false }
 tracing = "0.1"
+unsend = "0.2"
 waker-fn = "1"
 
 [dev-dependencies]

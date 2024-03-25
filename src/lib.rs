@@ -12,6 +12,9 @@ pub mod futures {
         pub use futures_util::*;
     }
 }
+pub mod lock {
+    pub use unsend::lock::*;
+}
 
 use std::{cell::OnceCell, future::Future, sync::Arc};
 
