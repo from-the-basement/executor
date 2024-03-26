@@ -172,7 +172,7 @@ pub mod tests {
             .max_blocking_thread_num(1)
             .build()
             .unwrap()
-            .run(|| async {
+            .block_on(async {
                 let step = Arc::new(AtomicUsize::new(1));
                 let inner_step = step.clone();
                 let task = unblock(move || {
