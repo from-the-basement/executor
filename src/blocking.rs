@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    future::Future,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Condvar, Mutex, MutexGuard, OnceLock,
@@ -9,7 +10,6 @@ use std::{
 };
 
 use async_task::{Runnable, Task};
-use futures_lite::prelude::*;
 
 pub(crate) static BLOCKING_EXECUTOR: OnceLock<Executor> = OnceLock::new();
 

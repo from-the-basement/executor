@@ -25,7 +25,7 @@ use worker::CONTEXT;
 pub use crate::executor::{Executor, ExecutorBuilder};
 
 thread_local! {
-    static EXECUTOR: OnceCell<Arc<Executor>> = OnceCell::new();
+    static EXECUTOR: OnceCell<Arc<Executor>> = const { OnceCell::new() };
 }
 
 pub fn spawn_local<F>(future: F) -> Task<F::Output>

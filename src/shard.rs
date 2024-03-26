@@ -34,8 +34,8 @@ impl<T> Shard<T> {
         }
     }
 
-    pub async fn with<'s, F, G>(
-        &'s self,
+    pub async fn with<F, G>(
+        &self,
         to: usize,
         f: impl FnOnce(Rc<RwLock<T>>) -> F + Send + 'static,
     ) -> G

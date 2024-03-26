@@ -16,7 +16,7 @@ use crate::deque::Taker;
 pub(crate) const NR_TASKS: usize = 256;
 
 thread_local! {
-    pub(crate) static CONTEXT: OnceCell<Context> = OnceCell::new();
+    pub(crate) static CONTEXT: OnceCell<Context> = const { OnceCell::new() };
 }
 
 #[derive(Debug)]
