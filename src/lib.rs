@@ -61,6 +61,10 @@ pub fn current_id() -> usize {
     CONTEXT.with(|context| context.get().unwrap().id)
 }
 
+pub fn try_get_current_id() -> Option<usize> {
+    CONTEXT.with(|context| context.get().map(|c| c.id))
+}
+
 #[cfg(test)]
 mod test {
     use std::{
@@ -117,12 +121,13 @@ mod test {
             .unwrap()
             .run(|| async {
                 spawn(async {
-                    println!("{:?}", std::thread::current().id());
+                    let id0 = std::thread::current().id();
                     yield_now().await;
-                    println!("{:?}", std::thread::current().id());
+                    let id1 = std::thread::current().id();
                     yield_now().await;
-                    println!("{:?}", std::thread::current().id());
+                    let id2 = std::thread::current().id();
                     yield_now().await;
+                    assert!(id0 == id1 && id1 == id2);
                 })
                 .detach()
             });

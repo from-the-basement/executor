@@ -160,7 +160,6 @@ impl Executor {
         let executor = Arc::new(self);
         future::block_on(join_all(executor.workers.iter().enumerate().map(
             |(id, worker)| {
-                let owned_thread = id;
                 let assign = worker.assign.clone();
                 let maker = maker.clone();
                 let executor = executor.clone();
@@ -169,7 +168,7 @@ impl Executor {
                     maker()
                 };
 
-                let schedule = schedule(owned_thread, assign, worker.waker.clone());
+                let schedule = schedule(id, assign, worker.waker.clone());
 
                 let (runnable, task) =
                     unsafe { async_task::spawn_unchecked(async move { scoped().await }, schedule) };
@@ -183,6 +182,17 @@ impl Executor {
                 task
             },
         )))
+    }
+
+    pub fn block_on<F>(self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        let executor = Arc::new(self);
+        future::block_on(async move {
+            EXECUTOR.with(|ex| ex.set(executor).expect("set global executor must be ok"));
+            future.await
+        })
     }
 
     pub fn spawn_local<F>(&self, future: F) -> Task<F::Output>

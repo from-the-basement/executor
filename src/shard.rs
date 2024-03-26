@@ -34,8 +34,8 @@ impl<T> Shard<T> {
         }
     }
 
-    pub async fn with<F, G>(
-        &self,
+    pub async fn with<'s, F, G>(
+        &'s self,
         to: usize,
         f: impl FnOnce(Rc<RwLock<T>>) -> F + Send + 'static,
     ) -> G
@@ -44,7 +44,10 @@ impl<T> Shard<T> {
         G: Send + 'static,
         T: 'static,
     {
-        if to == crate::current_id() {
+        if crate::try_get_current_id()
+            .map(|id| to == id)
+            .unwrap_or(false)
+        {
             (f)(self.inner[to].clone()).await
         } else {
             let this = self.clone();
@@ -67,7 +70,7 @@ mod tests {
             .worker_num(2)
             .build()
             .unwrap()
-            .run(|| async {
+            .block_on(async {
                 let local = super::Shard::new(|| 42);
                 let a = local
                     .with(0, |a| async move {
