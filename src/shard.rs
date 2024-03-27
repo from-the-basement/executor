@@ -44,7 +44,7 @@ impl<T> Shard<T> {
         G: Send + 'static,
         T: 'static,
     {
-        if crate::try_get_current_id()
+        if crate::try_get_current_worker_id()
             .map(|id| to == id)
             .unwrap_or(false)
         {

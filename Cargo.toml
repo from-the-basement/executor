@@ -14,6 +14,7 @@ futures-util = "0.3"
 libc = { version = "0.2" }
 mio = { version = "0.8", features = ["net", "os-ext", "os-poll"] }
 pin-project-lite = "0.2"
+piper = "0.2"
 slab = "0.4"
 socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1", default-features = false }
@@ -30,6 +31,7 @@ hyper = { version = "0.14", features = [
     "tcp",
 ] }
 tokio = { version = "1", features = ["full"] }
+tempfile = "3"
 
 [[example]]
 name = "hyper"

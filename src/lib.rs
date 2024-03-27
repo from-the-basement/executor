@@ -1,6 +1,7 @@
 mod blocking;
 mod deque;
 mod executor;
+pub mod fs;
 pub mod io;
 pub mod locals;
 pub mod net;
@@ -42,7 +43,12 @@ where
     Fut: 'static + Future,
     Fut::Output: 'static + Send,
 {
-    EXECUTOR.with(|executor| executor.get().unwrap().spawn_to(to, f))
+    EXECUTOR.with(|executor| {
+        executor
+            .get()
+            .expect("method must be called under executor context")
+            .spawn_to(to, f)
+    })
 }
 
 pub fn spawn<F>(future: F) -> Task<F::Output>
@@ -50,18 +56,28 @@ where
     F: 'static + Future + Send,
     F::Output: 'static + Send,
 {
-    EXECUTOR.with(|executor| executor.get().unwrap().spawn(future))
+    EXECUTOR.with(|executor| {
+        executor
+            .get()
+            .expect("method must be called under executor context")
+            .spawn(future)
+    })
 }
 
 pub fn worker_num() -> usize {
-    EXECUTOR.with(|executor| executor.get().unwrap().worker_num())
+    EXECUTOR.with(|executor| {
+        executor
+            .get()
+            .expect("method must be called under executor context")
+            .worker_num()
+    })
 }
 
-pub fn current_id() -> usize {
-    CONTEXT.with(|context| context.get().unwrap().id)
+pub fn get_current_worker_id() -> usize {
+    try_get_current_worker_id().expect("method must be called under executor context")
 }
 
-pub fn try_get_current_id() -> Option<usize> {
+pub fn try_get_current_worker_id() -> Option<usize> {
     CONTEXT.with(|context| context.get().map(|c| c.id))
 }
 
