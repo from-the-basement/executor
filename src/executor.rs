@@ -25,7 +25,7 @@ impl Default for ExecutorBuilder {
     fn default() -> Self {
         Self {
             worker_num: std::thread::available_parallelism().unwrap().get(),
-            max_blocking_thread_num: usize::MAX,
+            max_blocking_thread_num: 512,
         }
     }
 }
