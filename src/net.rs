@@ -11,7 +11,7 @@ pub use mio::net::{TcpListener, TcpStream};
 use mio::{event::Source, Interest};
 use socket2::{Domain, Protocol, Socket, Type};
 
-use super::worker::CONTEXT;
+use super::context::CONTEXT;
 
 pub struct Async<T: Source> {
     io: T,

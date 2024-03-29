@@ -1,4 +1,5 @@
 mod blocking;
+mod context;
 mod deque;
 mod executor;
 pub mod fs;
@@ -6,22 +7,18 @@ pub mod io;
 pub mod locals;
 pub mod net;
 pub mod shard;
-mod worker;
 pub mod futures {
     pub use futures_lite::*;
     pub mod util {
         pub use futures_util::*;
     }
 }
-pub mod lock {
-    pub use unsend::lock::*;
-}
 
 use std::{cell::OnceCell, future::Future, sync::Arc};
 
 pub use async_task::Task;
 pub use blocking::unblock;
-use worker::CONTEXT;
+use context::CONTEXT;
 
 pub use crate::executor::{Executor, ExecutorBuilder};
 

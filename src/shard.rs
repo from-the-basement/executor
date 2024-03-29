@@ -1,9 +1,7 @@
 use std::{fmt, future::Future, rc::Rc, sync::Arc};
 
-use unsend::lock::RwLock;
-
 pub struct Shard<T> {
-    inner: Arc<[Rc<RwLock<T>>]>,
+    inner: Arc<[Rc<T>]>,
 }
 
 impl<T> fmt::Debug for Shard<T> {
@@ -28,17 +26,13 @@ impl<T> Shard<T> {
         Self {
             inner: Arc::from(
                 (0..crate::worker_num())
-                    .map(|_| Rc::new(RwLock::new((f)())))
+                    .map(|_| Rc::new((f)()))
                     .collect::<Vec<_>>(),
             ),
         }
     }
 
-    pub async fn with<F, G>(
-        &self,
-        to: usize,
-        f: impl FnOnce(Rc<RwLock<T>>) -> F + Send + 'static,
-    ) -> G
+    pub async fn with<F, G>(&self, to: usize, f: impl FnOnce(Rc<T>) -> F + Send + 'static) -> G
     where
         F: Future<Output = G>,
         G: Send + 'static,
@@ -62,16 +56,18 @@ impl<T> Shard<T> {
 
 #[cfg(test)]
 mod tests {
+    use unsend::lock::RwLock;
+
     use crate::Executor;
 
     #[test]
-    fn test_thread_local() {
+    fn shard_per_thread() {
         Executor::builder()
             .worker_num(2)
             .build()
             .unwrap()
             .block_on(async {
-                let local = super::Shard::new(|| 42);
+                let local = super::Shard::new(|| RwLock::new(42));
                 let a = local
                     .with(0, |a| async move {
                         let mut a = a.write().await;

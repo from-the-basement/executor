@@ -10,8 +10,7 @@ use async_task::Runnable;
 use crossbeam_queue::SegQueue;
 use futures_lite::future;
 
-use super::io::Poller;
-use crate::deque::Taker;
+use crate::{deque::Taker, io::Poller};
 
 pub(crate) const NR_TASKS: usize = 256;
 
@@ -29,8 +28,11 @@ pub(crate) struct Context {
     pub(crate) waker: Arc<mio::Waker>,
 }
 
+impl UnwindSafe for Context {}
+impl RefUnwindSafe for Context {}
+
 impl Context {
-    fn new(
+    pub(crate) fn new(
         id: usize,
         assign: Arc<SegQueue<Runnable>>,
         global: Taker<Runnable>,
@@ -45,28 +47,6 @@ impl Context {
             poller: RefCell::new(poller),
             waker,
         }
-    }
-}
-
-pub(crate) struct Worker;
-
-impl UnwindSafe for Worker {}
-impl RefUnwindSafe for Worker {}
-
-impl Worker {
-    pub(crate) fn new(
-        id: usize,
-        assign: Arc<SegQueue<Runnable>>,
-        global: Taker<Runnable>,
-        poller: Poller,
-        waker: Arc<mio::Waker>,
-    ) -> Self {
-        CONTEXT.with(|context| {
-            context
-                .set(Context::new(id, assign, global, poller, waker))
-                .expect("context can not be setted twice")
-        });
-        Worker
     }
 
     pub(crate) async fn run(&self, future: impl Future<Output = ()>) {
@@ -136,17 +116,14 @@ impl Worker {
     }
 }
 
-impl Drop for Worker {
+impl Drop for Context {
     fn drop(&mut self) {
-        CONTEXT.with(|context| {
-            let context = context.get().expect("context should be initialized");
-            while let Some(runnable) = context.assign.pop() {
-                drop(runnable);
-            }
-            while let Some(runnable) = context.local.borrow_mut().pop_front() {
-                drop(runnable);
-            }
-        });
+        while let Some(runnable) = self.assign.pop() {
+            drop(runnable);
+        }
+        while let Some(runnable) = self.local.borrow_mut().pop_front() {
+            drop(runnable);
+        }
     }
 }
 
@@ -159,7 +136,7 @@ mod test {
     use crossbeam_queue::SegQueue;
     use futures_lite::{future, future::yield_now};
 
-    use super::{Worker, CONTEXT};
+    use super::{Context, CONTEXT};
     use crate::{deque::Deque, io::Poller};
 
     fn spawn_local<T>(future: impl Future<Output = T>) -> Task<T> {
@@ -183,13 +160,23 @@ mod test {
         let mut poller = Poller::with_capacity(1).unwrap();
         let waker = Arc::new(poller.waker().unwrap());
         let global = Deque::new(1).take(0);
-        let ex = Worker::new(0, Arc::new(SegQueue::new()), global, poller, waker);
 
-        let task = spawn_local(async { 1 + 2 });
-        future::block_on(ex.run(async {
-            let res = task.await * 2;
-            assert_eq!(res, 6);
-        }));
+        CONTEXT.with(|context| {
+            context
+                .set(Context::new(
+                    0,
+                    Arc::new(SegQueue::new()),
+                    global,
+                    poller,
+                    waker,
+                ))
+                .unwrap();
+            let task = spawn_local(async { 1 + 2 });
+            future::block_on(context.get().unwrap().run(async {
+                let res = task.await * 2;
+                assert_eq!(res, 6);
+            }));
+        })
     }
 
     #[test]
@@ -197,39 +184,49 @@ mod test {
         let mut poller = Poller::with_capacity(1).unwrap();
         let waker = Arc::new(poller.waker().unwrap());
         let global = Deque::new(1).take(0);
-        let ex = Worker::new(0, Arc::new(SegQueue::new()), global, poller, waker);
 
-        let counter = Rc::new(RefCell::new(0));
-        let counter1 = Rc::clone(&counter);
-        let task = spawn_local(async {
-            {
-                let mut c = counter1.borrow_mut();
-                assert_eq!(*c, 0);
-                *c = 1;
-            }
-            let counter_clone = Rc::clone(&counter1);
-            let t = spawn_local(async {
+        CONTEXT.with(|context| {
+            context
+                .set(Context::new(
+                    0,
+                    Arc::new(SegQueue::new()),
+                    global,
+                    poller,
+                    waker,
+                ))
+                .unwrap();
+            let counter = Rc::new(RefCell::new(0));
+            let counter1 = Rc::clone(&counter);
+            let task = spawn_local(async {
                 {
-                    let mut c = counter_clone.borrow_mut();
-                    assert_eq!(*c, 1);
-                    *c = 2;
+                    let mut c = counter1.borrow_mut();
+                    assert_eq!(*c, 0);
+                    *c = 1;
                 }
+                let counter_clone = Rc::clone(&counter1);
+                let t = spawn_local(async {
+                    {
+                        let mut c = counter_clone.borrow_mut();
+                        assert_eq!(*c, 1);
+                        *c = 2;
+                    }
+                    yield_now().await;
+                    {
+                        let mut c = counter_clone.borrow_mut();
+                        assert_eq!(*c, 3);
+                        *c = 4;
+                    }
+                });
                 yield_now().await;
                 {
-                    let mut c = counter_clone.borrow_mut();
-                    assert_eq!(*c, 3);
-                    *c = 4;
+                    let mut c = counter1.borrow_mut();
+                    assert_eq!(*c, 2);
+                    *c = 3;
                 }
+                t.await;
             });
-            yield_now().await;
-            {
-                let mut c = counter1.borrow_mut();
-                assert_eq!(*c, 2);
-                *c = 3;
-            }
-            t.await;
-        });
-        future::block_on(ex.run(task));
-        assert_eq!(*counter.as_ref().borrow(), 4);
+            future::block_on(context.get().unwrap().run(task));
+            assert_eq!(*counter.as_ref().borrow(), 4);
+        })
     }
 }

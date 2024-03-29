@@ -161,6 +161,8 @@ pub mod tests {
         Arc,
     };
 
+    use crate::spawn;
+
     #[test]
     fn unblock_task() {
         use std::time::Duration;
@@ -168,23 +170,25 @@ pub mod tests {
         use crate::{unblock, Executor};
 
         Executor::builder()
-            .worker_num(1)
-            .max_blocking_thread_num(1)
+            .worker_num(2)
             .build()
             .unwrap()
             .block_on(async {
-                let step = Arc::new(AtomicUsize::new(1));
-                let inner_step = step.clone();
-                let task = unblock(move || {
-                    std::thread::sleep(Duration::from_millis(1));
-                    debug_assert!(inner_step
-                        .compare_exchange(2, 3, Ordering::SeqCst, Ordering::SeqCst)
+                spawn(async {
+                    let step = Arc::new(AtomicUsize::new(1));
+                    let inner_step = step.clone();
+                    let task = unblock(move || {
+                        std::thread::sleep(Duration::from_millis(1));
+                        assert!(inner_step
+                            .compare_exchange(2, 3, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok());
+                    });
+                    assert!(step
+                        .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst)
                         .is_ok());
-                });
-                debug_assert!(step
-                    .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok());
-                task.await;
+                    task.await;
+                })
+                .await
             });
     }
 }

@@ -1,4 +1,12 @@
-use std::{future::Future, sync::Arc, thread, thread::JoinHandle};
+use std::{
+    future::Future,
+    panic::{RefUnwindSafe, UnwindSafe},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    thread::{self, JoinHandle},
+};
 
 use async_task::{Runnable, Task};
 use crossbeam_deque::Injector;
@@ -9,10 +17,9 @@ use futures_util::future::join_all;
 
 use crate::{
     blocking,
+    context::{self, Context, CONTEXT},
     deque::{Deque, Taker},
     io::Poller,
-    worker,
-    worker::{Worker, CONTEXT},
     EXECUTOR,
 };
 
@@ -65,11 +72,15 @@ pub(crate) struct WorkerHandler {
 pub struct Executor {
     workers: Vec<WorkerHandler>,
     closer: Arc<Event>,
-    pub(crate) global: Arc<Injector<Runnable>>,
+    global: Arc<Injector<Runnable>>,
+    next_steal: Arc<AtomicUsize>,
 }
 
 unsafe impl Send for Executor {}
 unsafe impl Sync for Executor {}
+
+impl UnwindSafe for Executor {}
+impl RefUnwindSafe for Executor {}
 
 impl Drop for Executor {
     fn drop(&mut self) {
@@ -117,6 +128,7 @@ impl Executor {
             workers,
             closer,
             global: deque.global(),
+            next_steal: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -126,7 +138,7 @@ impl Executor {
         closer: Arc<Event>,
         global: Taker<Runnable>,
     ) -> std::io::Result<WorkerHandler> {
-        use worker::NR_TASKS;
+        use context::NR_TASKS;
 
         let a = assign.clone();
         let mut poller = Poller::with_capacity(NR_TASKS)?;
@@ -136,10 +148,15 @@ impl Executor {
         let join = thread::Builder::new()
             .name(format!("async-worker-{}", worker_id))
             .spawn(move || {
-                let worker = Worker::new(worker_id, a, global, poller, pw);
-                future::block_on(worker.run(async move {
-                    closer.listen().await;
-                }));
+                CONTEXT.with(move |context| {
+                    context
+                        .set(Context::new(worker_id, a, global, poller, pw))
+                        .unwrap();
+
+                    future::block_on(context.get().unwrap().run(async move {
+                        closer.listen().await;
+                    }));
+                });
             })?;
 
         Ok(WorkerHandler {
@@ -157,31 +174,7 @@ impl Executor {
         F::Output: Send,
         MakeF: FnOnce() -> F + Clone + Send,
     {
-        let executor = Arc::new(self);
-        future::block_on(join_all(executor.workers.iter().enumerate().map(
-            |(id, worker)| {
-                let assign = worker.assign.clone();
-                let maker = maker.clone();
-                let executor = executor.clone();
-                let scoped = move || {
-                    EXECUTOR.with(|ex| ex.set(executor).expect("set global executor must be ok"));
-                    maker()
-                };
-
-                let schedule = schedule(id, assign, worker.waker.clone());
-
-                let (runnable, task) =
-                    unsafe { async_task::spawn_unchecked(async move { scoped().await }, schedule) };
-                runnable.schedule();
-
-                worker
-                    .waker
-                    .wake()
-                    .expect("wake worker to accpet spawned task must be successed");
-
-                task
-            },
-        )))
+        Arc::new(self).init_workers(maker)
     }
 
     pub fn block_on<F>(self, future: F) -> F::Output
@@ -189,6 +182,7 @@ impl Executor {
         F: Future,
     {
         let executor = Arc::new(self);
+        executor.init_workers(|| async {});
         future::block_on(async move {
             EXECUTOR.with(|ex| ex.set(executor).expect("set global executor must be ok"));
             future.await
@@ -206,7 +200,11 @@ impl Executor {
         });
         let schedule = schedule(owned_thread, assign, waker);
 
-        let (runnable, task) = unsafe { async_task::spawn_unchecked(future, schedule) };
+        let (runnable, task) = unsafe {
+            async_task::Builder::new()
+                .propagate_panic(true)
+                .spawn_unchecked(move |_| future, schedule)
+        };
 
         runnable.schedule();
 
@@ -222,38 +220,89 @@ impl Executor {
         let handler = &self.workers[to];
         let schedule = schedule(to, handler.assign.clone(), handler.waker.clone());
 
-        let (runnable, task) =
-            unsafe { async_task::spawn_unchecked(async move { f().await }, schedule) };
+        let (runnable, task) = unsafe {
+            async_task::Builder::new()
+                .propagate_panic(true)
+                .spawn_unchecked(move |_| async move { f().await }, schedule)
+        };
 
         runnable.schedule();
 
         task
     }
 
-    pub fn spawn<F>(&self, future: F) -> Task<F::Output>
+    pub fn spawn<F>(self: &Arc<Self>, future: F) -> Task<F::Output>
     where
         F: 'static + Future + Send,
         F::Output: 'static + Send,
     {
+        let executor = self.clone();
         let (runnable, task) = unsafe {
-            async_task::spawn_unchecked(future, move |runnable| {
-                CONTEXT.with(|context| {
-                    context
-                        .get()
-                        .expect("context should be initialized")
-                        .global
-                        .push(runnable);
-                })
-            })
+            async_task::Builder::new()
+                .propagate_panic(true)
+                .spawn_unchecked(
+                    |_| future,
+                    move |runnable| {
+                        CONTEXT.with(|context| {
+                            if let Some(context) = context.get() {
+                                context.global.push(runnable);
+                            } else {
+                                executor.global.push(runnable);
+                                executor.workers[executor
+                                    .next_steal
+                                    .fetch_add(1, Ordering::Relaxed)
+                                    % executor.worker_num()]
+                                .waker
+                                .wake()
+                                .expect("wake worker to accpet spawned task must be successed");
+                            }
+                        });
+                    },
+                )
         };
 
-        self.global.push(runnable);
+        runnable.schedule();
 
         task
     }
 
     pub fn worker_num(&self) -> usize {
         self.workers.len()
+    }
+
+    fn init_workers<MakeF, F>(self: &Arc<Self>, maker: MakeF) -> Vec<F::Output>
+    where
+        F: Future,
+        F::Output: Send,
+        MakeF: FnOnce() -> F + Clone + Send,
+    {
+        future::block_on(join_all(self.workers.iter().enumerate().map(
+            |(id, worker)| {
+                let assign = worker.assign.clone();
+                let maker = maker.clone();
+                let executor = self.clone();
+                let scoped = move || {
+                    EXECUTOR.with(|ex| ex.set(executor).expect("set global executor must be ok"));
+                    maker()
+                };
+
+                let schedule = schedule(id, assign, worker.waker.clone());
+
+                let (runnable, task) = unsafe {
+                    async_task::Builder::new()
+                        .propagate_panic(true)
+                        .spawn_unchecked(move |_| async move { scoped().await }, schedule)
+                };
+                runnable.schedule();
+
+                worker
+                    .waker
+                    .wake()
+                    .expect("wake worker to accpet spawned task must be successed");
+
+                task
+            },
+        )))
     }
 }
 
@@ -264,28 +313,17 @@ fn schedule(
 ) -> impl Fn(Runnable) {
     move |runnable| {
         CONTEXT.with(|context| {
-            if let Some(id) = context.get().map(|cx| cx.id) {
-                if id == owned_thread {
-                    CONTEXT.with(|context| {
-                        let context = context.get().expect("context should be initialized");
-                        context.local.borrow_mut().push_back(runnable);
-                    });
+            if let Some(context) = context.get() {
+                if context.id == owned_thread {
+                    context.local.borrow_mut().push_back(runnable);
                     return;
                 }
             }
-            assign.push(runnable);
 
+            assign.push(runnable);
             waker
                 .wake()
                 .expect("wake worker by task scheduling must be ok");
         })
-    }
-}
-
-struct CallOnDrop<F: Fn()>(F);
-
-impl<F: Fn()> Drop for CallOnDrop<F> {
-    fn drop(&mut self) {
-        (self.0)();
     }
 }
