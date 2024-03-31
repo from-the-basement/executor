@@ -6,6 +6,7 @@ use executor::{
 };
 use futures_lite::StreamExt;
 use hyper::{server::conn::Http, service::service_fn, Body, Request, Response};
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 async fn hello_world(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
     Ok(Response::new("Hello, World".into()))
@@ -44,7 +45,7 @@ fn main() {
                             Http::new()
                                 .with_executor(LocalExecutor)
                                 .http1_keep_alive(true)
-                                .serve_connection(stream, service)
+                                .serve_connection(stream.compat(), service)
                                 .await
                                 .unwrap_or_else(|e| {
                                     tracing::warn!("send response to {} error: {}.", peer_addr, e);

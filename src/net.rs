@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures_lite::Stream;
+use crate::futures::{AsyncRead, AsyncWrite, Stream};
 pub use mio::net::{TcpListener, TcpStream};
 use mio::{event::Source, Interest};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -95,38 +95,30 @@ impl Async<TcpStream> {
     }
 }
 
-impl tokio::io::AsyncRead for Async<TcpStream> {
+impl AsyncRead for Async<TcpStream> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
-        unsafe {
-            let bytes =
-                &mut *(buf.unfilled_mut() as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]);
-            match self.io.read(bytes) {
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    CONTEXT.with(|context| {
-                        context.get().unwrap().poller.borrow_mut().add(
-                            self.id,
-                            cx.waker().clone(),
-                            Interest::READABLE,
-                        )
-                    });
-                    Poll::Pending
-                }
-                Ok(n) => {
-                    buf.assume_init(n);
-                    buf.advance(n);
-                    Poll::Ready(Ok(()))
-                }
-                Err(e) => Poll::Ready(Err(e)),
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        match self.io.read(buf) {
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                CONTEXT.with(|context| {
+                    context.get().unwrap().poller.borrow_mut().add(
+                        self.id,
+                        cx.waker().clone(),
+                        Interest::READABLE,
+                    )
+                });
+                Poll::Pending
             }
+            Ok(n) => Poll::Ready(Ok(n)),
+            Err(e) => Poll::Ready(Err(e)),
         }
     }
 }
 
-impl tokio::io::AsyncWrite for Async<TcpStream> {
+impl AsyncWrite for Async<TcpStream> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -151,7 +143,7 @@ impl tokio::io::AsyncWrite for Async<TcpStream> {
         Poll::Ready(self.io.flush())
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(self.io.shutdown(Shutdown::Both))
     }
 
@@ -173,9 +165,5 @@ impl tokio::io::AsyncWrite for Async<TcpStream> {
             }
             x => Poll::Ready(x),
         }
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        true
     }
 }
