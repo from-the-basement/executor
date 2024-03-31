@@ -1,4 +1,10 @@
-use std::{fmt, future::Future, rc::Rc, sync::Arc};
+use std::{
+    fmt,
+    future::Future,
+    panic::{RefUnwindSafe, UnwindSafe},
+    rc::Rc,
+    sync::Arc,
+};
 
 pub struct Shard<T> {
     inner: Arc<[Rc<T>]>,
@@ -6,7 +12,9 @@ pub struct Shard<T> {
 
 impl<T> fmt::Debug for Shard<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Shard").finish()
+        f.debug_struct("Shard")
+            .field(std::any::type_name::<T>(), &"...")
+            .finish()
     }
 }
 
@@ -20,6 +28,9 @@ impl<T> Clone for Shard<T> {
 
 unsafe impl<T> Send for Shard<T> {}
 unsafe impl<T> Sync for Shard<T> {}
+
+impl<T> UnwindSafe for Shard<T> {}
+impl<T> RefUnwindSafe for Shard<T> {}
 
 impl<T> Shard<T> {
     pub fn new(f: impl Fn() -> T + Send) -> Self {
