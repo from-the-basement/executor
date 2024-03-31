@@ -4,7 +4,7 @@ mod deque;
 mod executor;
 pub mod fs;
 pub mod io;
-pub mod locals;
+pub mod local;
 pub mod net;
 pub mod shard;
 pub mod futures {

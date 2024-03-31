@@ -31,12 +31,12 @@ macro_rules! task_local {
 macro_rules! __task_local_inner {
     ($(#[$attr:meta])* $vis:vis $name:ident, $t:ty) => {
         $(#[$attr])*
-        $vis static $name: $crate::locals::LocalKey<$t> = {
+        $vis static $name: $crate::local::LocalKey<$t> = {
             std::thread_local! {
                 static __KEY: std::cell::RefCell<Option<$t>> = const { std::cell::RefCell::new(None) };
             }
 
-            $crate::locals::LocalKey { inner: __KEY }
+            $crate::local::LocalKey { inner: __KEY }
         };
     };
 }
