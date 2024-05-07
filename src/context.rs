@@ -50,6 +50,18 @@ impl Context {
     }
 
     pub(crate) async fn run(&self, future: impl Future<Output = ()>) {
+        #[inline]
+        fn inner_run<F: FnMut() -> Option<Runnable>>(capacity: &mut usize, mut fn_pop: F) {
+            while *capacity > 0 {
+                if let Some(runnable) = fn_pop() {
+                    runnable.run();
+                    *capacity -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
         // A future that runs tasks forever.
         let run_forever = async move {
             loop {
@@ -57,33 +69,9 @@ impl Context {
                     let context = context.get().expect("context should be initialized");
                     let mut capacity = NR_TASKS;
 
-                    while capacity > 0 {
-                        let runnable = context.local.borrow_mut().pop_front();
-                        if let Some(runnable) = runnable {
-                            runnable.run();
-                            capacity -= 1;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    while capacity > 0 {
-                        if let Some(runnable) = context.assign.pop() {
-                            runnable.run();
-                            capacity -= 1;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    while capacity > 0 {
-                        if let Some(runnable) = context.global.pop() {
-                            runnable.run();
-                            capacity -= 1;
-                        } else {
-                            break;
-                        }
-                    }
+                    inner_run(&mut capacity, || context.local.borrow_mut().pop_front());
+                    inner_run(&mut capacity, || context.assign.pop());
+                    inner_run(&mut capacity, || context.global.pop());
                 });
 
                 future::yield_now().await;
