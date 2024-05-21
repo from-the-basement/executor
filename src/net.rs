@@ -62,6 +62,7 @@ impl Async<TcpListener> {
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
         socket.set_reuse_port(true)?;
+        socket.set_nodelay(true)?;
         socket.bind(&address.into())?;
         socket.listen(32768)?;
         Async::new(TcpListener::from_std(socket.into()))
