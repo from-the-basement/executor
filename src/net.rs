@@ -61,6 +61,7 @@ impl Async<TcpListener> {
         )?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
+        #[cfg(unix)]
         socket.set_reuse_port(true)?;
         socket.set_nodelay(true)?;
         socket.bind(&address.into())?;
