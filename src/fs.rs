@@ -1,7 +1,7 @@
 use std::{
     fmt,
     future::{poll_fn, Future},
-    io::{self, Seek, SeekFrom, Write},
+    io::{self, Error, Seek, SeekFrom, Write},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -123,22 +123,10 @@ impl File {
             }
         }
     }
-}
 
-impl AsyncRead for File {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        self._poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for File {
-    fn poll_write(
+    fn _poll_write(
         mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        cx: &mut Context,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         loop {
@@ -174,7 +162,7 @@ impl AsyncWrite for File {
         }
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn _poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         loop {
             match &mut self.state {
                 State::Idle(_) => return Poll::Ready(Ok(())),
@@ -185,10 +173,38 @@ impl AsyncWrite for File {
         }
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn _poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         ready!(Pin::new(&mut self).poll_flush(cx))?;
         self.state = State::Idle(None);
         Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncRead for File {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        self._poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for File {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self._poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self._poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self._poll_close(cx)
     }
 }
 
@@ -276,6 +292,24 @@ impl tokio::io::AsyncSeek for File {
     }
 }
 
+impl tokio::io::AsyncWrite for File {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, Error>> {
+        self._poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        self._poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        self._poll_close(cx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempfile;
@@ -308,13 +342,12 @@ mod tests {
 
     #[test]
     fn open_read_and_write_on_tokio() {
-        Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
+        Executor::builder()
+            .worker_num(1)
             .build()
             .unwrap()
             .block_on(async {
-                let mut file = tokio::fs::File::from(tempfile().unwrap());
+                let mut file = super::File::from(tempfile().unwrap());
                 tokio::io::AsyncWriteExt::write_all(&mut file, b"hello")
                     .await
                     .unwrap();
