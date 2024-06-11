@@ -17,7 +17,7 @@ pin-project-lite = "0.2"
 piper = "0.2"
 slab = "0.4"
 socket2 = { version = "0.5", features = ["all"] }
-tokio = { version = "1.0", features = ["io-util"] }
+tokio = { version = "1", features = ["io-util"] }
 tracing = "0.1"
 waker-fn = "1"
 
