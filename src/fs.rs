@@ -245,8 +245,17 @@ impl tokio::io::AsyncRead for File {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        match self._poll_read(cx, buf.filled_mut()) {
-            Poll::Ready(result) => Poll::Ready(result.map(|_| ())),
+        match self._poll_read(cx, buf.initialize_unfilled()) {
+            Poll::Ready(result) => match result {
+                Ok(n) => {
+                    unsafe {
+                        buf.assume_init(n);
+                    }
+                    buf.advance(n);
+                    Poll::Ready(Ok(()))
+                }
+                Err(e) => Poll::Ready(Err(e)),
+            },
             Poll::Pending => Poll::Pending,
         }
     }
@@ -313,7 +322,6 @@ impl tokio::io::AsyncWrite for File {
 #[cfg(test)]
 mod tests {
     use tempfile::tempfile;
-    use tokio::io::AsyncSeekExt;
 
     use crate::{futures::AsyncWriteExt, Executor};
 
