@@ -1,12 +1,13 @@
 use std::{
     fmt,
     future::{poll_fn, Future},
-    io::{self, Seek, SeekFrom, Write},
+    io::{self, Error, Seek, SeekFrom, Write},
     pin::Pin,
     task::{Context, Poll},
 };
 
 use async_task::Task;
+use tokio::io::ReadBuf;
 
 use crate::{
     blocking,
@@ -79,13 +80,11 @@ impl File {
             }
         }
     }
-}
 
-impl AsyncRead for File {
-    fn poll_read(
+    fn _poll_read(
         mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
+        cx: &mut Context,
+        dest: impl Write,
     ) -> Poll<io::Result<usize>> {
         loop {
             match &mut self.state {
@@ -110,7 +109,7 @@ impl AsyncRead for File {
                     let n = ready!(reader
                         .as_mut()
                         .expect("reader must be had")
-                        .poll_drain(cx, buf))?;
+                        .poll_drain(cx, dest))?;
 
                     if n == 0 {
                         let (res, io) = ready!(Pin::new(task).poll(cx));
@@ -124,12 +123,10 @@ impl AsyncRead for File {
             }
         }
     }
-}
 
-impl AsyncWrite for File {
-    fn poll_write(
+    fn _poll_write(
         mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        cx: &mut Context,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         loop {
@@ -165,7 +162,7 @@ impl AsyncWrite for File {
         }
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn _poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         loop {
             match &mut self.state {
                 State::Idle(_) => return Poll::Ready(Ok(())),
@@ -176,10 +173,38 @@ impl AsyncWrite for File {
         }
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn _poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         ready!(Pin::new(&mut self).poll_flush(cx))?;
         self.state = State::Idle(None);
         Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncRead for File {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        self._poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for File {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self._poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self._poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self._poll_close(cx)
     }
 }
 
@@ -214,14 +239,88 @@ impl AsyncSeek for File {
     }
 }
 
+impl tokio::io::AsyncRead for File {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self._poll_read(cx, buf.initialize_unfilled()) {
+            Poll::Ready(result) => match result {
+                Ok(n) => {
+                    buf.advance(n);
+                    Poll::Ready(Ok(()))
+                }
+                Err(e) => Poll::Ready(Err(e)),
+            },
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl tokio::io::AsyncSeek for File {
+    fn start_seek(mut self: Pin<&mut Self>, position: SeekFrom) -> io::Result<()> {
+        match &mut self.state {
+            State::Idle(file) => {
+                let mut file = file.take().expect("file must be existed in idle state");
+                let task = blocking::Executor::spawn(async move {
+                    let res = file.seek(position);
+                    (position, res, file)
+                });
+                self.state = State::InSeek { task };
+                Ok(())
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::Other,
+                "other file operation is pending, call poll_complete before start_seek",
+            )),
+        }
+    }
+
+    fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        loop {
+            match &mut self.state {
+                State::Idle(file) => {
+                    let mut file = file.as_ref().expect("file must be existed in idle state");
+
+                    return Poll::Ready(file.stream_position());
+                }
+                State::InSeek { task } => {
+                    let (_, res, io) = ready!(Pin::new(task).poll(cx));
+                    self.state = State::Idle(Some(io));
+                    let current = res?;
+
+                    return Poll::Ready(Ok(current));
+                }
+                _ => ready!(self.poll_stop(cx))?,
+            }
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for File {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, Error>> {
+        self._poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        self._poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        self._poll_close(cx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempfile;
 
-    use crate::{
-        futures::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-        Executor,
-    };
+    use crate::{futures::AsyncWriteExt, Executor};
 
     #[test]
     fn open_read_and_write() {
@@ -231,12 +330,40 @@ mod tests {
             .unwrap()
             .block_on(async {
                 let mut file = super::File::from(tempfile().unwrap());
-                file.write_all(b"hello").await.unwrap();
-                file.seek(std::io::SeekFrom::Start(0)).await.unwrap();
+                futures_lite::AsyncWriteExt::write_all(&mut file, b"hello")
+                    .await
+                    .unwrap();
+                futures_lite::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(0))
+                    .await
+                    .unwrap();
                 let mut buf = [0; 5];
-                file.read_exact(&mut buf).await.unwrap();
+                futures_lite::AsyncReadExt::read_exact(&mut file, &mut buf)
+                    .await
+                    .unwrap();
                 assert_eq!(&buf, b"hello");
                 file.close().await.unwrap();
+            });
+    }
+
+    #[test]
+    fn open_read_and_write_on_tokio() {
+        Executor::builder()
+            .worker_num(1)
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut file = super::File::from(tempfile().unwrap());
+                tokio::io::AsyncWriteExt::write_all(&mut file, b"hello")
+                    .await
+                    .unwrap();
+                tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(0))
+                    .await
+                    .unwrap();
+                let mut buf = [0; 5];
+                tokio::io::AsyncReadExt::read_exact(&mut file, &mut buf)
+                    .await
+                    .unwrap();
+                assert_eq!(&buf, b"hello");
             });
     }
 }
