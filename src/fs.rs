@@ -275,7 +275,7 @@ impl tokio::io::AsyncSeek for File {
         loop {
             match &mut self.state {
                 State::Idle(file) => {
-                    let mut file = file.take().expect("file must be existed in idle state");
+                    let mut file = file.as_ref().expect("file must be existed in idle state");
 
                     return Poll::Ready(file.stream_position());
                 }
@@ -313,7 +313,7 @@ impl tokio::io::AsyncWrite for File {
 #[cfg(test)]
 mod tests {
     use tempfile::tempfile;
-    use tokio::runtime::Builder;
+    use tokio::io::AsyncSeekExt;
 
     use crate::{futures::AsyncWriteExt, Executor};
 
