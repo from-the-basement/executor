@@ -248,9 +248,6 @@ impl tokio::io::AsyncRead for File {
         match self._poll_read(cx, buf.initialize_unfilled()) {
             Poll::Ready(result) => match result {
                 Ok(n) => {
-                    unsafe {
-                        buf.assume_init(n);
-                    }
                     buf.advance(n);
                     Poll::Ready(Ok(()))
                 }
