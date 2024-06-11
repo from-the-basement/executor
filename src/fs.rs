@@ -7,6 +7,7 @@ use std::{
 };
 
 use async_task::Task;
+use tokio::io::ReadBuf;
 
 use crate::{
     blocking,
@@ -79,13 +80,11 @@ impl File {
             }
         }
     }
-}
 
-impl AsyncRead for File {
-    fn poll_read(
+    fn _poll_read(
         mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
+        cx: &mut Context,
+        dest: impl Write,
     ) -> Poll<io::Result<usize>> {
         loop {
             match &mut self.state {
@@ -110,7 +109,7 @@ impl AsyncRead for File {
                     let n = ready!(reader
                         .as_mut()
                         .expect("reader must be had")
-                        .poll_drain(cx, buf))?;
+                        .poll_drain(cx, dest))?;
 
                     if n == 0 {
                         let (res, io) = ready!(Pin::new(task).poll(cx));
@@ -123,6 +122,16 @@ impl AsyncRead for File {
                 _ => ready!(self.poll_stop(cx))?,
             }
         }
+    }
+}
+
+impl AsyncRead for File {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        self._poll_read(cx, buf)
     }
 }
 
@@ -214,14 +223,65 @@ impl AsyncSeek for File {
     }
 }
 
+impl tokio::io::AsyncRead for File {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self._poll_read(cx, buf.filled_mut()) {
+            Poll::Ready(result) => Poll::Ready(result.map(|_| ())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl tokio::io::AsyncSeek for File {
+    fn start_seek(mut self: Pin<&mut Self>, position: SeekFrom) -> io::Result<()> {
+        match &mut self.state {
+            State::Idle(file) => {
+                let mut file = file.take().expect("file must be existed in idle state");
+                let task = blocking::Executor::spawn(async move {
+                    let res = file.seek(position);
+                    (position, res, file)
+                });
+                self.state = State::InSeek { task };
+                Ok(())
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::Other,
+                "other file operation is pending, call poll_complete before start_seek",
+            )),
+        }
+    }
+
+    fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        loop {
+            match &mut self.state {
+                State::Idle(file) => {
+                    let mut file = file.take().expect("file must be existed in idle state");
+
+                    return Poll::Ready(file.stream_position());
+                }
+                State::InSeek { task } => {
+                    let (_, res, io) = ready!(Pin::new(task).poll(cx));
+                    self.state = State::Idle(Some(io));
+                    let current = res?;
+
+                    return Poll::Ready(Ok(current));
+                }
+                _ => ready!(self.poll_stop(cx))?,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempfile;
+    use tokio::runtime::Builder;
 
-    use crate::{
-        futures::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-        Executor,
-    };
+    use crate::{futures::AsyncWriteExt, Executor};
 
     #[test]
     fn open_read_and_write() {
@@ -231,12 +291,41 @@ mod tests {
             .unwrap()
             .block_on(async {
                 let mut file = super::File::from(tempfile().unwrap());
-                file.write_all(b"hello").await.unwrap();
-                file.seek(std::io::SeekFrom::Start(0)).await.unwrap();
+                futures_lite::AsyncWriteExt::write_all(&mut file, b"hello")
+                    .await
+                    .unwrap();
+                futures_lite::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(0))
+                    .await
+                    .unwrap();
                 let mut buf = [0; 5];
-                file.read_exact(&mut buf).await.unwrap();
+                futures_lite::AsyncReadExt::read_exact(&mut file, &mut buf)
+                    .await
+                    .unwrap();
                 assert_eq!(&buf, b"hello");
                 file.close().await.unwrap();
+            });
+    }
+
+    #[test]
+    fn open_read_and_write_on_tokio() {
+        Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut file = tokio::fs::File::from(tempfile().unwrap());
+                tokio::io::AsyncWriteExt::write_all(&mut file, b"hello")
+                    .await
+                    .unwrap();
+                tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(0))
+                    .await
+                    .unwrap();
+                let mut buf = [0; 5];
+                tokio::io::AsyncReadExt::read_exact(&mut file, &mut buf)
+                    .await
+                    .unwrap();
+                assert_eq!(&buf, b"hello");
             });
     }
 }

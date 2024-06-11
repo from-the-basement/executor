@@ -6,12 +6,12 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::futures::{AsyncRead, AsyncWrite, Stream};
 pub use mio::net::{TcpListener, TcpStream};
 use mio::{event::Source, Interest};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use super::context::CONTEXT;
+use crate::futures::{AsyncRead, AsyncWrite, Stream};
 
 pub struct Async<T: Source> {
     io: T,
