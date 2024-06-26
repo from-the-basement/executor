@@ -19,6 +19,7 @@ use std::{cell::OnceCell, future::Future, sync::Arc};
 pub use async_task::Task;
 pub use blocking::unblock;
 use context::CONTEXT;
+use criterion::async_executor::AsyncExecutor;
 
 pub use crate::executor::{Executor, ExecutorBuilder};
 
@@ -76,6 +77,12 @@ pub fn get_current_worker_id() -> usize {
 
 pub fn try_get_current_worker_id() -> Option<usize> {
     CONTEXT.with(|context| context.get().map(|c| c.id))
+}
+
+impl AsyncExecutor for Executor {
+    fn block_on<T>(&self, future: impl Future<Output = T>) -> T {
+        self.block_on(future)
+    }
 }
 
 #[cfg(test)]
